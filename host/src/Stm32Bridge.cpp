@@ -1,0 +1,294 @@
+#include "Stm32Bridge.hpp"
+#include "SerialClient.hpp"
+#include "ISerialObserver.hpp"
+#include "PortEnumerator.hpp"
+
+#include <iostream>
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
+#include <atomic>
+#include <thread>
+#include <cstdlib>
+
+namespace bridge {
+
+namespace {
+
+constexpr const char* kStLinkVid = "0483";
+constexpr const char* kStLinkPid = "374b";
+constexpr uint32_t kBaudRate = 115200;
+constexpr auto kAckTimeout = std::chrono::milliseconds(500);
+constexpr int kMaxRetries = 3;
+
+/**
+ * @brief Observador interno para monitoramento de ACKs e eventos assíncronos do STM32.
+ */
+class BridgeObserver : public serial::ISerialObserver {
+public:
+    explicit BridgeObserver(serial::SerialClient* client) : m_client(client) {}
+
+    void onDataReceived(const std::vector<uint8_t>& data) override {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (uint8_t byte : data) {
+            // Byte de confirmação (ACK) enviado pelo STM32
+            if (byte == BYTE_ACK) {
+                m_ackReceived = true;
+                m_cv.notify_all();
+            } else if (byte == BYTE_NACK) {
+                m_nackReceived = true;
+                m_cv.notify_all();
+            } else {
+                // Bufferização de mensagens ASCII assíncronas do STM32 (ex: [btn]\r\n)
+                if (byte == '\r') continue;
+                if (byte == '\n') {
+                    if (!m_asciiLine.empty()) {
+                        processAsciiMessage(m_asciiLine);
+                        m_asciiLine.clear();
+                    }
+                } else if (m_asciiLine.size() < 128) {
+                    m_asciiLine.push_back(static_cast<char>(byte));
+                }
+            }
+        }
+    }
+
+    void onError(const std::string& errorMessage) override {
+        std::cerr << "[Stm32Bridge] Erro de comunicação serial: " << errorMessage << std::endl;
+    }
+
+    void onConnectionClosed() override {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_closed = true;
+        m_cv.notify_all();
+    }
+
+    bool waitForAck(std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        bool success = m_cv.wait_for(lock, timeout, [this] {
+            return m_ackReceived || m_nackReceived || m_closed;
+        });
+
+        if (!success || m_closed || m_nackReceived) {
+            return false;
+        }
+
+        return m_ackReceived;
+    }
+
+    void resetAck() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_ackReceived = false;
+        m_nackReceived = false;
+    }
+
+    bool isClosed() const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_closed;
+    }
+
+private:
+    void processAsciiMessage(const std::string& msg) {
+        // Se o STM32 enviar notificação assíncrona com espera de confirmação (ex: [btn])
+        if (msg == "[btn]") {
+            if (m_client) {
+                std::vector<uint8_t> ack = {BYTE_ACK};
+                m_client->send(ack);
+                std::cout << "[Stm32Bridge] Evento '" << msg << "' recebido do STM32. ACK enviado instantaneamente!" << std::endl;
+            }
+        } else {
+            std::cout << "[Stm32Bridge] Mensagem recebida do STM32: " << msg << std::endl;
+        }
+    }
+
+    serial::SerialClient* m_client;
+    mutable std::mutex m_mutex;
+    std::condition_variable m_cv;
+    bool m_ackReceived = false;
+    bool m_nackReceived = false;
+    bool m_closed = false;
+    std::string m_asciiLine;
+};
+
+/**
+ * @brief Singleton para gerenciar a instância de conexão e o ciclo de vida.
+ */
+class BridgeManager {
+public:
+    static BridgeManager& instance() {
+        static BridgeManager mgr;
+        return mgr;
+    }
+
+    bool connect() {
+        std::lock_guard<std::mutex> lock(m_managerMutex);
+        return connectInternal();
+    }
+
+    void disconnect() {
+        std::lock_guard<std::mutex> lock(m_managerMutex);
+        if (m_connected) {
+            m_client.disconnect();
+            m_observer.reset();
+            m_connected = false;
+            std::cout << "[Stm32Bridge] Desconectado." << std::endl;
+        }
+    }
+
+    bool isConnected() const {
+        return m_connected && (!m_observer || !m_observer->isClosed());
+    }
+
+    bool sendWithHandshake(uint8_t cmdByte, const char* cmdDescription) {
+        std::lock_guard<std::mutex> lock(m_managerMutex);
+
+        if (!m_connected || (m_observer && m_observer->isClosed())) {
+            std::cout << "[Stm32Bridge] Não conectado ao enviar " << cmdDescription << ". Tentando conectar..." << std::endl;
+            if (!connectInternal()) {
+                std::cerr << "[Stm32Bridge] Falha ao conectar automaticamente." << std::endl;
+                return false;
+            }
+        }
+
+        const std::vector<uint8_t> payload = {cmdByte};
+        const std::vector<uint8_t> hostAck = {BYTE_ACK};
+
+        for (int attempt = 1; attempt <= kMaxRetries; ++attempt) {
+            m_observer->resetAck();
+
+            std::cout << "[Stm32Bridge] [Tentativa " << attempt << "/" << kMaxRetries 
+                      << "] Enviando comando " << cmdDescription 
+                      << " (0x" << std::hex << static_cast<int>(cmdByte) << std::dec << ")..." << std::endl;
+
+            // 1. Host envia o byte de comando para o STM32
+            if (!m_client.send(payload)) {
+                std::cerr << "[Stm32Bridge] Falha ao transmitir byte pela serial." << std::endl;
+                continue;
+            }
+
+            // 2. Host aguarda o ACK do STM32
+            if (m_observer->waitForAck(kAckTimeout)) {
+                std::cout << "[Stm32Bridge] ACK (0x06) recebido do STM32!" << std::endl;
+
+                // 3. Handshake mútuo: Host envia ACK de volta ao STM32 para confirmar a conclusão do ciclo
+                std::cout << "[Stm32Bridge] Enviando ACK (0x06) de confirmação mútua ao STM32..." << std::endl;
+                m_client.send(hostAck);
+
+                std::cout << "[Stm32Bridge] Handshake bidirecional concluído com sucesso para " << cmdDescription << "." << std::endl;
+                return true;
+            } else {
+                std::cerr << "[Stm32Bridge] Timeout aguardando ACK do STM32 na tentativa " << attempt << "." << std::endl;
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+
+        std::cerr << "[Stm32Bridge] Erro: Falha no handshake após " << kMaxRetries << " tentativas." << std::endl;
+        return false;
+    }
+
+private:
+    BridgeManager() = default;
+    ~BridgeManager() {
+        disconnect();
+    }
+
+    bool connectInternal() {
+        if (m_connected && m_observer && !m_observer->isClosed()) {
+            return true;
+        }
+
+        std::string targetPort;
+
+        // 1. Verifica se foi informada porta customizada via variável de ambiente
+        const char* envPort = std::getenv("SERIAL_PORT");
+        if (envPort && envPort[0] != '\0') {
+            targetPort = envPort;
+            std::cout << "[Stm32Bridge] Utilizando porta definida via SERIAL_PORT: " << targetPort << std::endl;
+        } else {
+            // 2. Procura ST-Link pelo VID/PID oficial STMicroelectronics (0483:374b)
+            auto stLink = serial::PortEnumerator::findByVidPid(kStLinkVid, kStLinkPid);
+            if (stLink) {
+                targetPort = stLink->portPath;
+                std::cout << "[Stm32Bridge] Dispositivo STM32 ST-Link localizado em: " 
+                          << targetPort << " (" << stLink->description << ")" << std::endl;
+            } else {
+                // 3. Varre portas seriais buscando "STM32" ou "STLink" na descrição
+                auto ports = serial::PortEnumerator::listPorts();
+                for (const auto& p : ports) {
+                    if (p.description.find("STM32") != std::string::npos ||
+                        p.description.find("STLink") != std::string::npos ||
+                        p.vendorId == kStLinkVid) {
+                        targetPort = p.portPath;
+                        std::cout << "[Stm32Bridge] Dispositivo compatível localizado em: " 
+                                  << targetPort << " (" << p.description << ")" << std::endl;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (targetPort.empty()) {
+            std::cerr << "[Stm32Bridge] Nenhum microcontrolador STM32 detectado automaticamente." << std::endl;
+            auto available = serial::PortEnumerator::listPorts();
+            if (!available.empty()) {
+                std::cout << "[Stm32Bridge] Portas seriais encontradas no sistema:" << std::endl;
+                for (const auto& p : available) {
+                    std::cout << "  - " << p.portPath << " (VID: " << p.vendorId << ", PID: " << p.productId 
+                              << ", Desc: " << p.description << ")" << std::endl;
+                }
+            }
+            return false;
+        }
+
+        std::cout << "[Stm32Bridge] Conectando a " << targetPort << " @ " << kBaudRate << " 8N1..." << std::endl;
+        if (!m_client.connect(targetPort, kBaudRate)) {
+            std::cerr << "[Stm32Bridge] Falha ao abrir porta serial: " << targetPort << std::endl;
+            return false;
+        }
+
+        m_observer = std::make_unique<BridgeObserver>(&m_client);
+        m_client.addObserver(m_observer.get());
+        m_connected = true;
+
+        // Descarta dados residuais na inicialização
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        (void)m_client.readBufferedMessages();
+
+        std::cout << "[Stm32Bridge] Conexão com STM32 estabelecida com sucesso." << std::endl;
+        return true;
+    }
+
+    serial::SerialClient m_client;
+    std::unique_ptr<BridgeObserver> m_observer;
+    bool m_connected = false;
+    mutable std::mutex m_managerMutex;
+};
+
+} // namespace
+
+// ==============================================================================
+// Implementação das Funções da Interface Pública
+// ==============================================================================
+
+bool conectar() {
+    return BridgeManager::instance().connect();
+}
+
+bool enviar_objeto_encontrado() {
+    return BridgeManager::instance().sendWithHandshake(CMD_OBJETO_ENCONTRADO, "OBJETO_ENCONTRADO");
+}
+
+bool enviar_sem_objeto() {
+    return BridgeManager::instance().sendWithHandshake(CMD_SEM_OBJETO, "SEM_OBJETO");
+}
+
+void desconectar() {
+    BridgeManager::instance().disconnect();
+}
+
+bool esta_conectado() {
+    return BridgeManager::instance().isConnected();
+}
+
+} // namespace bridge

@@ -14,11 +14,16 @@ add_library(serial_lib STATIC
     src/AsyncSerialReceiver.cpp
     src/MessageBufferObserver.cpp
     src/SerialClient.cpp
+    src/Stm32Bridge.cpp
 )
 
 target_include_directories(serial_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(serial_lib PRIVATE Threads::Threads)
 
-# Example executable
+# Example executables
 add_executable(serial_example example/main.cpp)
 target_link_libraries(serial_example PRIVATE serial_lib)
+
+add_executable(bridge_example example/demo_bridge.cpp)
+target_link_libraries(bridge_example PRIVATE serial_lib)
+
