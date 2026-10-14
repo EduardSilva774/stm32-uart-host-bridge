@@ -160,8 +160,8 @@ int main(void)
   MX_USB_OTG_FS_PCD_Init();
   /* USER CODE BEGIN 2 */
   /* Inicialização: COM_Output e LD1 iniciam em nível baixo (zero) */
-  HAL_GPIO_WritePin(COM_Output_GPIO_Port, COM_Output_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(COM_Output_GPIO_Port, COM_Output_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, GPIO_PIN_SET);
 
   /* Partida da máquina de estados da BSP: IDLE -> RECEIVING_IT */
   if (BSP_UART_StartRecieve_IT(rx_cmd_buffer, CMD_SIZE, Command_Callback) != HAL_OK)
