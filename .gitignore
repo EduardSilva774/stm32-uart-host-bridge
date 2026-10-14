@@ -1,0 +1,64 @@
+# ==============================================================================
+# Host C++ & CMake Build Artifacts
+# ==============================================================================
+build/
+**/build/
+bin/
+**/bin/
+*.o
+**/*.o
+*.a
+**/*.a
+*.so
+**/*.so
+*.dylib
+**/*.dylib
+*.dll
+**/*.dll
+*.exe
+**/*.exe
+CMakeCache.txt
+**/CMakeCache.txt
+CMakeFiles/
+**/CMakeFiles/
+cmake_install.cmake
+**/cmake_install.cmake
+
+# ==============================================================================
+# STM32CubeIDE / Eclipse / ARM Embedded Build Artifacts
+# ==============================================================================
+Debug/
+**/Debug/
+Release/
+**/Release/
+*.elf
+**/*.elf
+*.bin
+**/*.bin
+*.hex
+**/*.hex
+*.map
+**/*.map
+*.list
+**/*.list
+*.d
+**/*.d
+*.su
+**/*.su
+*.bak
+**/*.bak
+*.orig
+**/*.orig
+
+# Eclipse / STM32CubeIDE machine-specific local settings
+firmware/.settings/language.settings.xml
+
+# ==============================================================================
+# General IDE & Operating System Artifacts
+# ==============================================================================
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
