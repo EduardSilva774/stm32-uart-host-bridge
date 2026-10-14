@@ -120,9 +120,9 @@ public:
         return mgr;
     }
 
-    bool connect() {
+    bool connect(const std::string& customPort = "") {
         std::lock_guard<std::mutex> lock(m_managerMutex);
-        return connectInternal();
+        return connectInternal(customPort);
     }
 
     void disconnect() {
@@ -131,8 +131,14 @@ public:
             m_client.disconnect();
             m_observer.reset();
             m_connected = false;
+            m_currentPort.clear();
             std::cout << "[Stm32Bridge] Desconectado." << std::endl;
         }
+    }
+
+    std::string getCurrentPort() const {
+        std::lock_guard<std::mutex> lock(m_managerMutex);
+        return m_currentPort;
     }
 
     bool isConnected() const {
@@ -193,36 +199,42 @@ private:
         disconnect();
     }
 
-    bool connectInternal() {
+    bool connectInternal(const std::string& customPort = "") {
         if (m_connected && m_observer && !m_observer->isClosed()) {
             return true;
         }
 
         std::string targetPort;
 
-        // 1. Verifica se foi informada porta customizada via variável de ambiente
-        const char* envPort = std::getenv("SERIAL_PORT");
-        if (envPort && envPort[0] != '\0') {
-            targetPort = envPort;
-            std::cout << "[Stm32Bridge] Utilizando porta definida via SERIAL_PORT: " << targetPort << std::endl;
+        // 1. Porta informada explicitamente
+        if (!customPort.empty()) {
+            targetPort = customPort;
+            std::cout << "[Stm32Bridge] Utilizando porta especificada: " << targetPort << std::endl;
         } else {
-            // 2. Procura ST-Link pelo VID/PID oficial STMicroelectronics (0483:374b)
-            auto stLink = serial::PortEnumerator::findByVidPid(kStLinkVid, kStLinkPid);
-            if (stLink) {
-                targetPort = stLink->portPath;
-                std::cout << "[Stm32Bridge] Dispositivo STM32 ST-Link localizado em: " 
-                          << targetPort << " (" << stLink->description << ")" << std::endl;
+            // 2. Verifica se foi informada porta customizada via variável de ambiente
+            const char* envPort = std::getenv("SERIAL_PORT");
+            if (envPort && envPort[0] != '\0') {
+                targetPort = envPort;
+                std::cout << "[Stm32Bridge] Utilizando porta definida via SERIAL_PORT: " << targetPort << std::endl;
             } else {
-                // 3. Varre portas seriais buscando "STM32" ou "STLink" na descrição
-                auto ports = serial::PortEnumerator::listPorts();
-                for (const auto& p : ports) {
-                    if (p.description.find("STM32") != std::string::npos ||
-                        p.description.find("STLink") != std::string::npos ||
-                        p.vendorId == kStLinkVid) {
-                        targetPort = p.portPath;
-                        std::cout << "[Stm32Bridge] Dispositivo compatível localizado em: " 
-                                  << targetPort << " (" << p.description << ")" << std::endl;
-                        break;
+                // 3. Procura ST-Link pelo VID/PID oficial STMicroelectronics (0483:374b)
+                auto stLink = serial::PortEnumerator::findByVidPid(kStLinkVid, kStLinkPid);
+                if (stLink) {
+                    targetPort = stLink->portPath;
+                    std::cout << "[Stm32Bridge] Dispositivo STM32 ST-Link localizado em: " 
+                              << targetPort << " (" << stLink->description << ")" << std::endl;
+                } else {
+                    // 4. Varre portas seriais buscando "STM32" ou "STLink" na descrição
+                    auto ports = serial::PortEnumerator::listPorts();
+                    for (const auto& p : ports) {
+                        if (p.description.find("STM32") != std::string::npos ||
+                            p.description.find("STLink") != std::string::npos ||
+                            p.vendorId == kStLinkVid) {
+                            targetPort = p.portPath;
+                            std::cout << "[Stm32Bridge] Dispositivo compatível localizado em: " 
+                                      << targetPort << " (" << p.description << ")" << std::endl;
+                            break;
+                        }
                     }
                 }
             }
@@ -250,18 +262,20 @@ private:
         m_observer = std::make_unique<BridgeObserver>(&m_client);
         m_client.addObserver(m_observer.get());
         m_connected = true;
+        m_currentPort = targetPort;
 
         // Descarta dados residuais na inicialização
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         (void)m_client.readBufferedMessages();
 
-        std::cout << "[Stm32Bridge] Conexão com STM32 estabelecida com sucesso." << std::endl;
+        std::cout << "[Stm32Bridge] Conexão com STM32 estabelecida com sucesso em " << targetPort << "." << std::endl;
         return true;
     }
 
     serial::SerialClient m_client;
     std::unique_ptr<BridgeObserver> m_observer;
     bool m_connected = false;
+    std::string m_currentPort;
     mutable std::mutex m_managerMutex;
 };
 
@@ -271,8 +285,12 @@ private:
 // Implementação das Funções da Interface Pública
 // ==============================================================================
 
-bool conectar() {
-    return BridgeManager::instance().connect();
+bool conectar(const std::string& customPort) {
+    return BridgeManager::instance().connect(customPort);
+}
+
+std::string obter_porta_conectada() {
+    return BridgeManager::instance().getCurrentPort();
 }
 
 bool enviar_objeto_encontrado() {

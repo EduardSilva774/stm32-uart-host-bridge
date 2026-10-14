@@ -38,16 +38,24 @@ constexpr uint8_t BYTE_NACK             = 0x15;
 // ==============================================================================
 
 /**
- * @brief Inicializa a comunicação serial e auto-conecta ao microcontrolador STM32.
+ * @brief Inicializa a comunicação serial e conecta ao microcontrolador STM32.
  * 
- * Não requer parâmetros: faz a varredura das portas seriais do Linux (/sys/class/tty/),
+ * Sem parâmetros: faz a varredura das portas seriais do Linux (/sys/class/tty/),
  * localiza o hardware ST-Link da STMicroelectronics (VID 0483 / PID 374b) ou porta
  * com identificador STM32, e estabelece a conexão em 115200 bps 8N1 no Modo Raw.
  * 
+ * Com parâmetro customPort: conecta diretamente na porta indicada (ex: "/dev/ttyACM0").
+ * 
+ * @param customPort Caminho opcional da porta serial (padrão "" para auto-descoberta).
  * @return true se o STM32 foi encontrado e a conexão foi estabelecida com sucesso.
  * @return false se nenhum dispositivo foi encontrado ou se a porta falhou ao abrir.
  */
-bool conectar();
+bool conectar(const std::string& customPort = "");
+
+/**
+ * @brief Retorna o caminho da porta serial atualmente conectada (ex: "/dev/ttyACM0").
+ */
+std::string obter_porta_conectada();
 
 /**
  * @brief Envia o byte de comando indicando objeto encontrado (0xA1) com handshake mútuo (ACK).
