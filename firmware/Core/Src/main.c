@@ -27,23 +27,15 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-/** @brief Evento sinalizado pela ISR para a resposta ser enviada no loop principal. */
-typedef enum {
-    LED_EVENT_NONE = 0,
-    LED_EVENT_ON,
-    LED_EVENT_OFF
-} LedEvent_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define LED_CMD_SIZE   1U    /* Tamanho fixo do pacote esperado pela BSP */
-#define LED_CMD_ON     '1'
-#define LED_CMD_OFF    '0'
-
-#define LED_MSG_ON       "[led] ligado\r\n"
-#define LED_MSG_OFF      "[led] desligado\r\n"
-#define LED_TX_TIMEOUT   100U  /* ms */
+#define CMD_SIZE                 1U
+#define CMD_OBJETO_ENCONTRADO    0xA1U
+#define CMD_SEM_OBJETO           0xA0U
+#define BYTE_ACK                 0x06U
+#define ACK_TIMEOUT_MS           500U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -79,11 +71,10 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
 /* Buffer de destino da BSP (preenchido dentro da ISR da USART3) */
-static uint8_t rx_cmd_buffer[LED_CMD_SIZE];
+static uint8_t rx_cmd_buffer[CMD_SIZE];
 
-/* Escrito na ISR (LedTest_Callback), lido/limpo no while(1) */
-static volatile LedEvent_t led_event = LED_EVENT_NONE;
-static volatile uint8_t btn_pressed_flag = 0;
+/* Flag sinalizada pela ISR para envio do ACK no while(1) */
+static volatile uint8_t pending_ack = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -94,41 +85,41 @@ static void MX_ETH_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_USB_OTG_FS_PCD_Init(void);
 /* USER CODE BEGIN PFP */
-static void LedTest_Callback(uint16_t size);
+static void Command_Callback(uint16_t size);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 /**
- * @brief  Callback de pacote completo da BSP UART.
+ * @brief  Callback de comando recebido via BSP UART.
  * @note   Executa em CONTEXTO DE INTERRUPÇÃO (chamado por HAL_UART_RxCpltCallback).
- *         Mantenha curto: sem HAL_Delay, sem printf, sem transmissão bloqueante.
- * @param  size Quantidade de bytes recebidos (sempre LED_CMD_SIZE neste teste).
+ *         Altera diretamente o pino COM_Output e espelha seu valor no LD1.
+ * @param  size Quantidade de bytes recebidos.
  */
-static void LedTest_Callback(uint16_t size)
+static void Command_Callback(uint16_t size)
 {
-    if (size >= LED_CMD_SIZE)
+    if (size >= CMD_SIZE)
     {
-        switch (rx_cmd_buffer[0])
+        uint8_t cmd = rx_cmd_buffer[0];
+
+        if (cmd == CMD_OBJETO_ENCONTRADO || cmd == '1')
         {
-            case LED_CMD_ON:
-                HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
-                led_event = LED_EVENT_ON;   /* Resposta enviada fora da ISR */
-                break;
-
-            case LED_CMD_OFF:
-                HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
-                led_event = LED_EVENT_OFF;  /* Resposta enviada fora da ISR */
-                break;
-
-            default:
-                /* Qualquer outro byte (ex: '\r', '\n') é ignorado */
-                break;
+            /* Objeto encontrado: abaixa o pino COM_Output para zero e espelha no LD1 */
+            HAL_GPIO_WritePin(COM_Output_GPIO_Port, COM_Output_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, GPIO_PIN_RESET);
+            pending_ack = 1;
+        }
+        else if (cmd == CMD_SEM_OBJETO || cmd == '0')
+        {
+            /* Sem objeto: levanta o pino COM_Output para um e espelha no LD1 */
+            HAL_GPIO_WritePin(COM_Output_GPIO_Port, COM_Output_Pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, GPIO_PIN_SET);
+            pending_ack = 1;
         }
     }
 
-    /* Rearma a recepção para o próximo comando */
-    BSP_UART_StartRecieve_IT(rx_cmd_buffer, LED_CMD_SIZE, LedTest_Callback);
+    /* Rearma imediatamente a recepção assíncrona para o próximo comando */
+    BSP_UART_StartRecieve_IT(rx_cmd_buffer, CMD_SIZE, Command_Callback);
 }
 /* USER CODE END 0 */
 
@@ -168,8 +159,12 @@ int main(void)
   MX_USART3_UART_Init();
   MX_USB_OTG_FS_PCD_Init();
   /* USER CODE BEGIN 2 */
+  /* Inicialização: COM_Output e LD1 iniciam em nível baixo (zero) */
+  HAL_GPIO_WritePin(COM_Output_GPIO_Port, COM_Output_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, GPIO_PIN_RESET);
+
   /* Partida da máquina de estados da BSP: IDLE -> RECEIVING_IT */
-  if (BSP_UART_StartRecieve_IT(rx_cmd_buffer, LED_CMD_SIZE, LedTest_Callback) != HAL_OK)
+  if (BSP_UART_StartRecieve_IT(rx_cmd_buffer, CMD_SIZE, Command_Callback) != HAL_OK)
   {
     Error_Handler();
   }
@@ -182,30 +177,13 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    if (btn_pressed_flag)
+    if (pending_ack)
     {
-      btn_pressed_flag = 0;
-      /* Envia pacote avisando do botão e aguarda ACK = 0x06 com timeout de 500ms */
-      uint8_t btn_msg[] = "[btn]\r\n";
-      if (BSP_UART_Send_WaitACK(btn_msg, sizeof(btn_msg) - 1U, 0x06, 500) == HAL_OK)
-      {
-        /* Opcional: Se receber o ACK, acende um LED para debug ou manda outra msg */
-      }
-    }
+      pending_ack = 0;
 
-    LedEvent_t ev = led_event;
-    if (ev != LED_EVENT_NONE)
-    {
-      led_event = LED_EVENT_NONE;
-
-      if (ev == LED_EVENT_ON)
-      {
-        BSP_UART_Send((uint8_t *)LED_MSG_ON, sizeof(LED_MSG_ON) - 1U, LED_TX_TIMEOUT);
-      }
-      else
-      {
-        BSP_UART_Send((uint8_t *)LED_MSG_OFF, sizeof(LED_MSG_OFF) - 1U, LED_TX_TIMEOUT);
-      }
+      /* Envia byte de confirmação ACK (0x06) e aguarda confirmação mútua do Host (0x06) */
+      uint8_t ack_val = BYTE_ACK;
+      BSP_UART_Send_WaitACK(&ack_val, 1U, BYTE_ACK, ACK_TIMEOUT_MS);
     }
   }
   /* USER CODE END 3 */
@@ -404,11 +382,15 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOG_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, LD1_Pin|LD3_Pin|LD2_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(COM_Output_GPIO_Port, COM_Output_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(USB_PowerSwitchOn_GPIO_Port, USB_PowerSwitchOn_Pin, GPIO_PIN_RESET);
@@ -425,6 +407,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : COM_Output_Pin */
+  GPIO_InitStruct.Pin = COM_Output_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(COM_Output_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : USB_PowerSwitchOn_Pin */
   GPIO_InitStruct.Pin = USB_PowerSwitchOn_Pin;
@@ -449,13 +438,7 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
-{
-  if (GPIO_Pin == USER_Btn_Pin)
-  {
-    btn_pressed_flag = 1;
-  }
-}
+
 /* USER CODE END 4 */
 
  /* MPU Configuration */
