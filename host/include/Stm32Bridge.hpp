@@ -33,6 +33,18 @@ constexpr uint8_t BYTE_ACK              = 0x06;
  */
 constexpr uint8_t BYTE_NACK             = 0x15;
 
+/**
+ * @brief Byte de comando enviado pelo STM32 solicitando parar varredura (StopScan).
+ * Valor: 0xB0 (176 decimal)
+ */
+constexpr uint8_t CMD_HOST_STOP_SCAN    = 0xB0;
+
+/**
+ * @brief Byte de comando enviado pelo STM32 solicitando retomar varredura (ResumeScan / RequestScan).
+ * Valor: 0xB1 (177 decimal)
+ */
+constexpr uint8_t CMD_HOST_RESUME_SCAN  = 0xB1;
+
 // ==============================================================================
 // Funções Principais da Abstração Solicitada
 // ==============================================================================
@@ -100,9 +112,18 @@ void desconectar();
  */
 bool esta_conectado();
 
+/**
+ * @brief Retorna o status atual da flag de varredura (StopScan / ResumeScan).
+ * @return true se a varredura estiver ativa (ResumeScan recebido).
+ * @return false se a varredura estiver pausada/parada (StopScan recebido).
+ */
+bool esta_varredura_ativa();
+
 // Aliases para conveniência sintática
 inline bool envia_objeto_encotrado() { return enviar_objeto_encontrado(); }
 inline bool enviarObjetoEncontrado() { return enviar_objeto_encontrado(); }
 inline bool enviarSemObjeto() { return enviar_sem_objeto(); }
+inline bool is_scan_active() { return esta_varredura_ativa(); }
+inline bool isScanActive() { return esta_varredura_ativa(); }
 
 } // namespace bridge

@@ -38,6 +38,22 @@ public:
             } else if (byte == BYTE_NACK) {
                 m_nackReceived = true;
                 m_cv.notify_all();
+            } else if (byte == CMD_HOST_STOP_SCAN) {
+                // Comando StopScan vindo do STM32: pausa a varredura e responde ACK imediatamente
+                m_scanActive = false;
+                if (m_client) {
+                    std::vector<uint8_t> ack = {BYTE_ACK};
+                    m_client->send(ack);
+                    std::cout << "[Stm32Bridge] Comando StopScan (0xB0) recebido do STM32. Varredura pausada. ACK (0x06) enviado!" << std::endl;
+                }
+            } else if (byte == CMD_HOST_RESUME_SCAN) {
+                // Comando ResumeScan / RequestScan vindo do STM32: ativa a varredura e responde ACK imediatamente
+                m_scanActive = true;
+                if (m_client) {
+                    std::vector<uint8_t> ack = {BYTE_ACK};
+                    m_client->send(ack);
+                    std::cout << "[Stm32Bridge] Comando ResumeScan/RequestScan (0xB1) recebido do STM32. Varredura ativa. ACK (0x06) enviado!" << std::endl;
+                }
             } else {
                 // Bufferização de mensagens ASCII assíncronas do STM32 (ex: [btn]\r\n)
                 if (byte == '\r') continue;
@@ -87,6 +103,11 @@ public:
         return m_closed;
     }
 
+    bool isScanActive() const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_scanActive;
+    }
+
 private:
     void processAsciiMessage(const std::string& msg) {
         // Se o STM32 enviar notificação assíncrona com espera de confirmação (ex: [btn])
@@ -107,6 +128,7 @@ private:
     bool m_ackReceived = false;
     bool m_nackReceived = false;
     bool m_closed = false;
+    bool m_scanActive = false;
     std::string m_asciiLine;
 };
 
@@ -143,6 +165,14 @@ public:
 
     bool isConnected() const {
         return m_connected && (!m_observer || !m_observer->isClosed());
+    }
+
+    bool isScanActive() const {
+        std::lock_guard<std::mutex> lock(m_managerMutex);
+        if (m_observer) {
+            return m_observer->isScanActive();
+        }
+        return false;
     }
 
     bool sendWithHandshake(uint8_t cmdByte, const char* cmdDescription) {
@@ -307,6 +337,10 @@ void desconectar() {
 
 bool esta_conectado() {
     return BridgeManager::instance().isConnected();
+}
+
+bool esta_varredura_ativa() {
+    return BridgeManager::instance().isScanActive();
 }
 
 } // namespace bridge

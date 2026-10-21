@@ -29,10 +29,14 @@ constexpr const char* kStLinkPid = "374b";
 constexpr uint32_t    kBaudRate  = 115200;            // = huart3.Init.BaudRate
 constexpr auto        kResponseTimeout = 500ms;
 
+/* Comandos de Varredura e Protocolo */
+constexpr uint8_t CMD_HOST_STOP_SCAN   = 0xB0;
+constexpr uint8_t CMD_HOST_RESUME_SCAN = 0xB1;
+constexpr uint8_t BYTE_ACK             = 0x06;
+
 /**
- * Observer que remonta os chunks crus do SO em linhas terminadas em '\n'.
- * Necessário porque a resposta do STM32 pode chegar fragmentada em vários
- * onDataReceived (ou colada com a próxima).
+ * Observer que remonta os chunks crus do SO em linhas terminadas em '\n'
+ * e intercepta comandos binários assíncronos do STM32 (StopScan e ResumeScan).
  */
 class LineObserver : public ISerialObserver {
 public:
@@ -43,6 +47,30 @@ public:
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             for (uint8_t byte : data) {
+                /* INTERCEPTAÇÃO DE COMANDOS DE VARREDURA (STM32 -> Host):
+                   Quando o STM32 envia STOP_SCAN (0xB0) ou RESUME_SCAN (0xB1),
+                   atualizamos a flag de estado de varredura e respondemos com
+                   o ACK (0x06) imediatamente na thread de RX. */
+                if (byte == CMD_HOST_STOP_SCAN) {
+                    m_scan_active = false;
+                    if (m_client) {
+                        std::vector<uint8_t> ack = {BYTE_ACK};
+                        m_client->send(ack);
+                        std::cout << "\n[Background] Comando StopScan (0xB0) recebido do STM32. Varredura pausada. Enviando ACK (0x06)!\n> " << std::flush;
+                    }
+                    continue;
+                }
+
+                if (byte == CMD_HOST_RESUME_SCAN) {
+                    m_scan_active = true;
+                    if (m_client) {
+                        std::vector<uint8_t> ack = {BYTE_ACK};
+                        m_client->send(ack);
+                        std::cout << "\n[Background] Comando ResumeScan (0xB1) recebido do STM32. Varredura ativa. Enviando ACK (0x06)!\n> " << std::flush;
+                    }
+                    continue;
+                }
+
                 if (byte == '\r') continue;
                 if (byte == '\n') {
                     if (!m_partial.empty()) {
@@ -51,7 +79,7 @@ public:
                            na thread de RX, antes de notificar a aplicação, para não deixar 
                            a BSP_UART_Send_WaitACK travar por timeout. */
                         if (m_partial == "[btn]") {
-                            std::vector<uint8_t> ack = {0x06};
+                            std::vector<uint8_t> ack = {BYTE_ACK};
                             if (m_client) {
                                 m_client->send(ack);
                                 // Imprime de forma assíncrona para avisar o usuário
@@ -110,6 +138,23 @@ public:
         return m_closed;
     }
 
+    /**
+     * @brief Retorna o status atual da flag de varredura (StopScan / ResumeScan).
+     * @return true se a varredura estiver ativa (ResumeScan recebido).
+     * @return false se a varredura estiver pausada/parada (StopScan recebido).
+     */
+    bool isScanActive() const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_scan_active;
+    }
+
+    /**
+     * @brief Alias para verificação de status da flag de varredura.
+     */
+    bool getScanStatus() const {
+        return isScanActive();
+    }
+
 private:
     static constexpr size_t kMaxLineLength = 256;
 
@@ -119,6 +164,7 @@ private:
     std::deque<std::string> m_lines;
     std::string             m_partial;
     bool                    m_closed = false;
+    bool                    m_scan_active = false;
 };
 
 /** Envia '1' ou '0' e valida a resposta esperada do firmware. */

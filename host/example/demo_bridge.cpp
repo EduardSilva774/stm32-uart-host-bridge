@@ -25,7 +25,8 @@ void printBanner() {
     std::cout << COLOR_CYAN << COLOR_BOLD
               << "╔════════════════════════════════════════════════════════════════════╗\n"
               << "║            STM32 UART BRIDGE - INTERFACE TERMINAL (CLI)            ║\n"
-              << "║       Handshake Bidirecional com Confirmação Mútua (ACK 0x06)      ║\n"
+              << "║       Handshake Bidirecional (ACK 0x06) & Controle de Varredura    ║\n"
+              << "║           (Host PC <-> Microcontrolador STM32 <-> Controladora)    ║\n"
               << "╚════════════════════════════════════════════════════════════════════╝\n"
               << COLOR_RESET << std::endl;
 }
@@ -36,9 +37,11 @@ void printHelp() {
               << "          -> Chama " << COLOR_BOLD << "enviar_objeto_encontrado()" << COLOR_RESET << " (0xA1) com ACK mútuo\n"
               << "  " << COLOR_YELLOW << "0" << COLOR_RESET << " ou " << COLOR_YELLOW << "sem" << COLOR_RESET
               << "          -> Chama " << COLOR_BOLD << "enviar_sem_objeto()" << COLOR_RESET << " (0xA0) com ACK mútuo\n"
+              << "  " << COLOR_CYAN << "v" << COLOR_RESET << " ou " << COLOR_CYAN << "scan" << COLOR_RESET
+              << "         -> Consulta o status da flag de varredura (StopScan 0xB0 / ResumeScan 0xB1)\n"
               << "  " << COLOR_CYAN << "c" << COLOR_RESET << " [porta]     -> Conecta ou reconecta (sem argumento = auto-detecta STM32)\n"
               << "  " << COLOR_MAGENTA << "d" << COLOR_RESET << "             -> Desconecta da porta serial\n"
-              << "  " << COLOR_BLUE << "s" << COLOR_RESET << "             -> Mostra status da conexão e lista portas do sistema\n"
+              << "  " << COLOR_BLUE << "s" << COLOR_RESET << "             -> Mostra status da conexão, varredura e portas seriais\n"
               << "  " << COLOR_CYAN << "t" << COLOR_RESET << " [N]         -> Teste de benchmark / estresse com N repetições (padrão: 5)\n"
               << "  " << COLOR_BOLD << "l" << COLOR_RESET << "             -> Limpa a tela do terminal\n"
               << "  " << COLOR_BOLD << "h" << COLOR_RESET << " ou " << COLOR_BOLD << "?" << COLOR_RESET
@@ -49,17 +52,21 @@ void printHelp() {
 }
 
 void showStatus() {
-    std::cout << "\n" << COLOR_BOLD << "--- Status Atual da Conexão ---" << COLOR_RESET << "\n";
+    std::cout << "\n" << COLOR_BOLD << "--- Status Atual da Conexão e Aplicação ---" << COLOR_RESET << "\n";
     if (bridge::esta_conectado()) {
-        std::cout << "  Estado: " << COLOR_GREEN << "CONECTADO" << COLOR_RESET << "\n"
-                  << "  Porta : " << COLOR_CYAN << bridge::obter_porta_conectada() << COLOR_RESET << "\n"
-                  << "  Config: 115200 8N1 (Raw Mode)\n"
+        bool scanActive = bridge::esta_varredura_ativa();
+        std::cout << "  Estado     : " << COLOR_GREEN << "CONECTADO" << COLOR_RESET << "\n"
+                  << "  Porta      : " << COLOR_CYAN << bridge::obter_porta_conectada() << COLOR_RESET << "\n"
+                  << "  Config     : 115200 8N1 (Raw Mode)\n"
+                  << "  Varredura  : " << (scanActive ? (std::string(COLOR_GREEN) + "ATIVA (ResumeScan recebido)") : (std::string(COLOR_YELLOW) + "PAUSADA (StopScan recebido)")) << COLOR_RESET << "\n"
                   << "  Protocolo:\n"
-                  << "    - Objeto Detectado : 0x" << std::hex << (int)bridge::CMD_OBJETO_ENCONTRADO << std::dec << "\n"
-                  << "    - Sem Objeto       : 0x" << std::hex << (int)bridge::CMD_SEM_OBJETO << std::dec << "\n"
-                  << "    - Handshake ACK    : 0x" << std::hex << (int)bridge::BYTE_ACK << std::dec << "\n";
+                  << "    - Objeto Detectado (Host -> Micro) : 0x" << std::hex << (int)bridge::CMD_OBJETO_ENCONTRADO << std::dec << "\n"
+                  << "    - Sem Objeto (Host -> Micro)       : 0x" << std::hex << (int)bridge::CMD_SEM_OBJETO << std::dec << "\n"
+                  << "    - StopScan (Micro -> Host)         : 0x" << std::hex << (int)bridge::CMD_HOST_STOP_SCAN << std::dec << "\n"
+                  << "    - ResumeScan (Micro -> Host)       : 0x" << std::hex << (int)bridge::CMD_HOST_RESUME_SCAN << std::dec << "\n"
+                  << "    - Handshake ACK                    : 0x" << std::hex << (int)bridge::BYTE_ACK << std::dec << "\n";
     } else {
-        std::cout << "  Estado: " << COLOR_RED << "DESCONECTADO" << COLOR_RESET << "\n";
+        std::cout << "  Estado     : " << COLOR_RED << "DESCONECTADO" << COLOR_RESET << "\n";
     }
 
     std::cout << "\n" << COLOR_BOLD << "Portas seriais detectadas no Linux:" << COLOR_RESET << "\n";
@@ -163,9 +170,11 @@ int main(int argc, char* argv[]) {
     // 2. Loop de interação via terminal
     std::string line;
     while (true) {
-        // Exibe prompt dinâmico com o status da conexão
+        // Exibe prompt dinâmico com o status da conexão e da varredura
         if (bridge::esta_conectado()) {
-            std::cout << COLOR_GREEN << "[" << bridge::obter_porta_conectada() << "]" << COLOR_RESET 
+            bool scanActive = bridge::esta_varredura_ativa();
+            std::cout << COLOR_GREEN << "[" << bridge::obter_porta_conectada() << "]" << COLOR_RESET
+                      << (scanActive ? (std::string(COLOR_GREEN) + "[SCAN: ATIVO]") : (std::string(COLOR_YELLOW) + "[SCAN: PAUSADO]")) << COLOR_RESET
                       << COLOR_BOLD << " bridge > " << COLOR_RESET << std::flush;
         } else {
             std::cout << COLOR_RED << "[Desconectado]" << COLOR_RESET 
@@ -235,6 +244,16 @@ int main(int argc, char* argv[]) {
             std::cout << COLOR_YELLOW << "Desconectado pelo usuário.\n" << COLOR_RESET;
         } else if (cmd == "s" || cmd == "status") {
             showStatus();
+        } else if (cmd == "v" || cmd == "scan" || cmd == "varredura") {
+            if (!bridge::esta_conectado()) {
+                std::cout << COLOR_RED << "Placa não conectada.\n" << COLOR_RESET;
+            } else {
+                bool scanActive = bridge::esta_varredura_ativa();
+                std::cout << "Status da Varredura pelo STM32: "
+                          << (scanActive ? (std::string(COLOR_GREEN) + "ATIVA (Câmera liberada para buscar objetos)")
+                                         : (std::string(COLOR_YELLOW) + "PAUSADA (Aguardando atuação do servo/motor)"))
+                          << COLOR_RESET << "\n";
+            }
         } else if (cmd == "t" || cmd == "teste" || cmd == "bench") {
             int iterations = 5;
             ss >> iterations;

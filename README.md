@@ -1,272 +1,326 @@
 # STM32 UART Host Bridge
 
-Biblioteca em **C++17** de alta performance para comunicação serial assíncrona com microcontroladores **STM32** no Linux, com controle de atuadores via hardware e handshake bidirecional com garantia de entrega (**ACK mútuo**).
+Sistema integrado de comunicação bidirecional de alta confiabilidade entre uma aplicação **Host (Linux / C++17)**, um microcontrolador **Edge (STM32F407VET6 em C com STM32Cube HAL)** e uma **Controladora Externa (PLC / Lógica Industrial)**.
+
+O projeto foi projetado para células industriais de triagem e manipulação de peças, coordenando em tempo real esteira transportadora, servomotor e algoritmos de visão computacional/IA via protocolo serial assíncrono com garantia mútua de entrega (**Handshake ACK**).
 
 ---
 
 ## 📑 Sumário
 
-- [Visão Geral e Arquitetura](#-visão-geral-e-arquitetura)
-- [Como o Edge (Firmware STM32) Opera](#-como-o-edge-firmware-stm32-opera)
-- [Como Adicionar a Biblioteca a Outro Projeto](#-como-adicionar-a-biblioteca-a-outro-projeto)
-  - [Opção 1: CMake via `add_subdirectory` (Recomendado)](#opção-1-cmake-via-add_subdirectory-recomendado)
-  - [Opção 2: Integração Direta dos Fontes](#opção-2-integração-direta-dos-fontes)
-  - [Opção 3: Linkagem Estática (`libserial_lib.a`)](#opção-3-linkagem-estática-libserial_liba)
-- [Como Importar e Utilizar o `Stm32Bridge`](#-como-importar-e-utilizar-o-stm32bridge)
-  - [As Três Funções da Abstração](#as-três-funções-da-abstração)
-  - [Exemplo Completo de Uso](#exemplo-completo-de-uso)
-- [Contrato de Comunicação e Handshake Mútuo](#-contrato-de-comunicação-e-handshake-mútuo)
+- [1. Visão Geral do Sistema (Os 3 Agentes)](#1-visão-geral-do-sistema-os-3-agentes)
+- [2. Protocolo de Comunicação e Fluxo Operacional](#2-protocolo-de-comunicação-e-fluxo-operacional)
+  - [Tabela de Bytes do Protocolo](#tabela-de-bytes-do-protocolo)
+  - [Diagrama de Sequência Completo](#diagrama-de-sequência-completo)
+  - [Detalhamento do Ciclo de Operação](#detalhamento-do-ciclo-de-operação)
+- [3. Camada Host C++ (`Stm32Bridge`)](#3-camada-host-c-stm32bridge)
+  - [Arquitetura Interna do Driver Host](#arquitetura-interna-do-driver-host)
+  - [Funções Disponíveis na `Stm32Bridge`](#funções-disponíveis-na-stm32bridge)
+  - [Como Adicionar a Biblioteca a Outro Projeto](#como-adicionar-a-biblioteca-a-outro-projeto)
+  - [Exemplo de Uso no Pipeline de Visão](#exemplo-de-uso-no-pipeline-de-visão)
+- [4. Camada de Firmware (Documentação Dedicada)](#4-camada-de-firmware-documentação-dedicada)
+- [5. Como Testar e Executar](#5-como-testar-e-executar)
 
 ---
 
-## 🧠 Visão Geral e Arquitetura
+## 1. Visão Geral do Sistema (Os 3 Agentes)
 
-A biblioteca foi projetada segundo padrões modernos de engenharia de software em C++17 e sistemas embarcados Linux:
+A automação é dividida em três camadas com papéis bem delimitados:
 
-1. **Camada de Alto Nível (`Stm32Bridge`)**: Abstrai todo o subsistema serial em **três funções simples**, auto-detectando o microcontrolador via USB e gerenciando transações com handshake seguro.
-2. **Fachada (`SerialClient`)**: Ponto central de abstração para gerenciamento de descritores de arquivo POSIX, ciclo de vida de threads e conexão.
-3. **Driver POSIX Raw (`SerialPort`)**: Configura o terminal serial via `struct termios` em **Modo Raw** (8N1, 115200 bps, sem buffer canônico, sem eco, sem controle de fluxo) para garantir comunicação determinística de baixa latência.
-4. **Worker Thread Assíncrono (`AsyncSerialReceiver`)**: Thread de segundo plano que monitora o descritor de arquivo através de multiplexação I/O (`poll()` com timeout de 100 ms), evitando consumo desnecessário de CPU (*busy-waiting*) e despachando dados aos observadores registrados.
-5. **Padrão Observer (`ISerialObserver`)**: Interface desacoplada para notificação de chegada de bytes, erros e desconexão abrupta de cabo.
-6. **Descoberta Dinâmica de Hardware (`PortEnumerator`)**: Varre o `/sys/class/tty/` via `std::filesystem`, ignorando consoles virtuais e identificando automaticamente o hardware ST-Link da STMicroelectronics (`VID: 0483`, `PID: 374b`).
-
----
-
-## ⚡ Como o Edge (Firmware STM32) Opera
-
-O microcontrolador roda uma implementação enxuta e determinística baseada na HAL do STM32 (testado na placa **NUCLEO-F767ZI**, mas compatível com qualquer família STM32 com UART):
-
-### 1. Pinos de Hardware
-- **`COM_Output` (`PF15`)**: Saída digital dedicada de controle externo.
-- **`LD1` (`PB0`)**: LED verde da placa que **espelha fielmente o estado do pino `COM_Output`** em tempo real.
-
-### 2. Comportamento Operacional
-- **Comando "Objeto Encontrado" (`0xA1` ou `'1'`)**:
-  - `COM_Output` é colocado imediatamente em **nível lógico baixo (`0` / `RESET`)**.
-  - `LD1` é desligado (**`0` / `RESET`**).
-- **Comando "Sem Objeto" (`0xA0` ou `'0'`)**:
-  - `COM_Output` é levantado imediatamente para **nível lógico alto (`1` / `SET`)**.
-  - `LD1` é ligado (**`1` / `SET`**).
-- **Inicialização**: Ambos os pinos iniciam em nível lógico baixo (`0`).
-- **Escopo Estrito**: Não há tarefas adicionais, botões concorrentes ou transmissões periódicas; o firmware atua exclusivamente sob demanda do Host.
+1. **Host PC (Visão Computacional / Inteligência Artificial):**
+   - Executa a aplicação de controle de qualidade e inspeção visual (OpenCV, rede neural ou scripts).
+   - Utiliza a biblioteca `Stm32Bridge` para gerenciar a porta serial em modo Raw assíncrono.
+   - Controla o disparo de comandos de detecção (`0xA1` / `0xA0`) e reage pausando/retomando o processamento de imagens conforme o estado da varredura (`StopScan` / `ResumeScan`).
+2. **Microcontrolador (Ponte Hardware - STM32F407VET6):**
+   - Lê os sinais de comando da controladora externa com debounce unificado de 10 ms.
+   - Atua nos drivers físicos de potência (pulsos de passo do motor via Timer 3 e sinal PWM do servo via Timer 4).
+   - Sinaliza à controladora a detecção de peças através do pino `foundObject` (`PD7`).
+   - Monitora transições entre motor e servo para sincronizar o fluxo da câmera do Host.
+3. **Controladora Externa (PLC / Lógica Industrial):**
+   - Coordena o avanço da esteira mecânica através dos pinos de entrada do microcontrolador.
+   - Ao receber o sinal de objeto encontrado (`PD7 == 0`), comanda a parada da esteira e o acionamento do atuador servo para manuseio da peça.
 
 ---
 
-## 📡 Contrato de Comunicação e Handshake Mútuo
+## 2. Protocolo de Comunicação e Fluxo Operacional
 
-A comunicação exige confirmação em ambos os sentidos para assegurar integridade contra perdas de pacotes:
+- **Interface Física:** USART1 (`PA9` = TX, `PA10` = RX).
+- **Parâmetros Seriais:** `115200 bps`, `8 bits de dados`, `sem paridade (None)`, `1 stop bit (8N1)`, sem controle de fluxo por hardware (`RTS/CTS off`).
+- **Timeout Máximo de Espera do ACK:** `50 ms`.
+
+### Tabela de Bytes do Protocolo
+
+| Byte Hex | Decimal | Constante no Código | Sentido | Descrição | Ação / Comportamento |
+| :---: | :---: | :--- | :---: | :--- | :--- |
+| **`0xB1`** | `177` | `CMD_HOST_RESUME_SCAN`<br>`CMD_HOST_REQUEST_SCAN` | **Micro $\rightarrow$ Host** | Retomada / Solicitação de Varredura | Disparado no boot e após o término da atuação do servo com retorno do motor. Host seta flag de varredura para **ATIVA**. *(Espera ACK 0x06)* |
+| **`0xB0`** | `176` | `CMD_HOST_STOP_SCAN` | **Micro $\rightarrow$ Host** | Parada da Varredura | Disparado quando a controladora para o motor e aciona o servo. Host seta flag de varredura para **PAUSADA**. *(Espera ACK 0x06)* |
+| **`0xA1`** | `161` | `CMD_OBJETO_ENCONTRADO`<br>*(ou char `'1'`)* | **Host $\rightarrow$ Micro** | Objeto Detectado pela Câmera | Micro coloca o pino `foundObject` (`PD7`) em nível **`0` (RESET)**. *(Espera ACK 0x06)* |
+| **`0xA0`** | `160` | `CMD_SEM_OBJETO`<br>*(ou char `'0'`)* | **Host $\rightarrow$ Micro** | Sem Objeto / Reset de Detecção | Micro coloca o pino `foundObject` (`PD7`) em nível **`1` (SET)**. *(Espera ACK 0x06)* |
+| **`0x06`** | `6` | `BYTE_ACK`<br>`HOST_EXPECTED_ACK` | **Bidirecional** | Confirmação de Entrega (ACK) | Resposta imediata injetada pelo receptor ao validar o comando, liberando o transmissor. |
+
+---
+
+### Diagrama de Sequência Completo
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Host as Host (Linux C++)
-    participant UART as Linha Serial (115200 8N1)
-    participant STM32 as STM32 (Firmware Edge)
+    participant Host as Host PC (C++ Stm32Bridge)
+    participant Micro as Microcontrolador (STM32F407)
+    participant Ctrl as Controladora Externa (PLC)
 
-    Host->>UART: Envia comando (0xA1 ou 0xA0)
-    UART->>STM32: Interrupção RX (Command_Callback)
-    Note over STM32: Altera COM_Output e espelha no LD1 (< 1 µs)
-    STM32->>UART: Envia ACK (0x06) via BSP_UART_Send_WaitACK
-    UART->>Host: Recebe ACK (0x06) na worker thread
-    Note over Host: Valida confirmação do STM32
-    Host->>UART: Envia ACK mútuo de volta (0x06)
-    UART->>STM32: Recebe ACK mútuo na ISR
-    Note over STM32: ack_received_flag = 1 -> BSP liberada com HAL_OK!
+    Note over Host,Ctrl: 1. BOOT DO SISTEMA E SINCRONISMO INICIAL
+    Micro->>Micro: Inicia periféricos e seta PD7 (foundObject) = 1 (SET)
+    Micro->>Host: Envia 0xB1 (RequestScan)
+    Host-->>Micro: Devolve 0x06 (ACK mútuo) na thread RX
+    Note over Host: flag varredura = ATIVA (Câmera liberada)
+
+    Note over Host,Ctrl: 2. MOVIMENTAÇÃO NORMAL DA ESTEIRA
+    Ctrl->>Micro: PD0 = 0 (Motor Ativo), PD6 = 0 (Servo Inativo)
+    Note over Micro: Micro espelha comandos para drivers físicos
+
+    Note over Host,Ctrl: 3. DETECÇÃO DE PEÇA PELA VISÃO COMPUTACIONAL
+    Host->>Micro: Envia 0xA1 (CMD_OBJETO_ENCONTRADO)
+    Micro-->>Host: Devolve 0x06 (ACK) fora da ISR
+    Micro->>Ctrl: Comuta PD7 = 0 (RESET / Objeto Detectado)
+
+    Note over Host,Ctrl: 4. REAÇÃO DA CONTROLADORA & PARADA DE VARREDURA
+    Ctrl->>Micro: Para motor (PD0 = 1) e Liga servo (PD6 = 1)
+    Note over Micro: Detecta motor_is_active=0 && servo_is_active=1
+    Micro->>Host: Envia 0xB0 (CMD_HOST_STOP_SCAN)
+    Host-->>Micro: Devolve 0x06 (ACK)
+    Note over Host: flag varredura = PAUSADA (Evita falsos positivos)
+
+    Note over Host,Ctrl: 5. FIM DA ATUAÇÃO MECÂNICA & RETOMADA
+    Ctrl->>Micro: Desliga servo (PD6 = 0) e Religa motor (PD0 = 0)
+    Note over Micro: Detecta motor_is_active=1 && servo_is_active=0
+    Micro->>Host: Envia 0xB1 (CMD_HOST_RESUME_SCAN)
+    Host-->>Micro: Devolve 0x06 (ACK)
+    Note over Host: flag varredura = ATIVA (Câmera liberada)
+
+    Note over Host,Ctrl: 6. RESET DO PINO DE OBJETO PELO HOST
+    Host->>Micro: Envia 0xA0 (CMD_SEM_OBJETO)
+    Micro-->>Host: Devolve 0x06 (ACK)
+    Micro->>Ctrl: Retorna PD7 = 1 (SET / Pronto para novo ciclo)
 ```
-
-| Comando / Sinal | Byte | Descrição | Ação no STM32 |
-| :--- | :--- | :--- | :--- |
-| `CMD_OBJETO_ENCONTRADO` | `0xA1` | Objeto detectado pelo Host | `COM_Output = 0`, `LD1 = 0` |
-| `CMD_SEM_OBJETO` | `0xA0` | Ausência de objeto | `COM_Output = 1`, `LD1 = 1` |
-| `BYTE_ACK` | `0x06` | Acknowledge (Handshake Mútuo) | Confirma processamento nos dois sentidos |
 
 ---
 
-## 📦 Como Adicionar a Biblioteca a Outro Projeto
+### Detalhamento do Ciclo de Operação
 
-### Estrutura dos Arquivos da Biblioteca
-Para utilizar em outro projeto (como um pipeline de visão computacional, nó ROS2 ou aplicação de controle), copie a pasta `host` ou apenas os diretórios `include/` e `src/`:
+1. **Primeira Comunicação (Boot):**
+   - Ao ligar, o microcontrolador executa `BSP_InitAPP()`, garante o pino `foundObject` (`PD7`) em nível `1` (sem objeto) e dispara imediatamente `BSP_HostRequestScan()` transmitindo o byte `0xB1`.
+   - O Host recebe o byte via thread em background (`BridgeObserver`), devolve `0x06` (ACK) e marca a flag interna de varredura como **ativa**.
+2. **Varredura Normal:**
+   - A controladora mantém o motor ativo (`PD0 = 0`) e o servo desligado (`PD6 = 0`). O firmware aplica debounce de 10 ms e atualiza os drivers de potência.
+   - O pipeline de visão do Host realiza a busca por peças.
+3. **Detecção e Sinalização:**
+   - Ao detectar uma peça, o Host chama `bridge::enviar_objeto_encontrado()`, transmitindo `0xA1`.
+   - O STM32 recebe o byte via interrupção UART, processa no loop principal devolvendo o `0x06` (ACK) e comuta `foundObject` (`PD7`) para `0` (nível baixo).
+4. **Parada de Varredura (StopScan):**
+   - Ao perceber `PD7 == 0`, a controladora para o motor (`PD0 = 1`) e aciona o servo (`PD6 = 1`).
+   - O microcontrolador detecta a combinação `!motor_is_active && servo_is_active` e envia `0xB0` (`CMD_HOST_STOP_SCAN`) ao Host.
+   - O Host responde instantaneamente com `0x06` (ACK) e pausa o processamento visual da câmera.
+5. **Retomada de Varredura (ResumeScan):**
+   - Concluído o tempo de manipulação da peça, a controladora desativa o servo (`PD6 = 0`) e reativa o motor (`PD0 = 0`).
+   - O microcontrolador detecta `motor_is_active && !servo_is_active` e envia `0xB1` (`CMD_HOST_RESUME_SCAN`) ao Host.
+   - O Host responde com `0x06` (ACK) e reativa a busca visual.
+6. **Regra Estrita de Reset do Pino `PD7`:**
+   - O pino `foundObject` (`PD7`) **NUNCA** é resetado automaticamente por tempo nem pela controladora; ele retorna para nível `1` (SET) **exclusivamente sob comando do Host** ao enviar `0xA0` (`CMD_SEM_OBJETO`).
 
+---
+
+## 3. Camada Host C++ (`Stm32Bridge`)
+
+A camada Host é construída em **C++17 puro** com dependências padrão do sistema operacional POSIX (Linux) e threads nativas (`std::thread`, `poll`).
+
+### Arquitetura Interna do Driver Host
+
+```text
+Stm32Bridge (Interface Unificada de Alto Nível)
+ └── BridgeManager (Singleton RAII)
+      ├── SerialClient (Fachada POSIX)
+      │    ├── SerialPort (termios em Modo Raw: 115200 8N1)
+      │    └── AsyncSerialReceiver (Worker Thread com poll())
+      ├── BridgeObserver (Implementa ISerialObserver)
+      │    ├── Intercepta 0xB0 / 0xB1 e injeta ACK (0x06) instantaneamente
+      │    └── Gerencia atomicamente a flag de varredura (m_scanActive)
+      └── PortEnumerator (Descoberta automática via /sys/class/tty/)
+```
+
+---
+
+### Funções Disponíveis na `Stm32Bridge`
+
+Todas as funções residem no namespace `bridge` (cabeçalho `host/include/Stm32Bridge.hpp`):
+
+| Função | Parâmetros | Retorno | Descrição |
+| :--- | :--- | :---: | :--- |
+| `bridge::conectar(customPort)` | `const std::string& customPort = ""` | `bool` | Conecta ao STM32. Se vazio, varre `/sys/class/tty/` e busca automaticamente o hardware ST-Link (`VID: 0483`, `PID: 374b`). Retorna `true` no sucesso. |
+| `bridge::enviar_objeto_encontrado()` | *Nenhum* | `bool` | Envia `0xA1` (`CMD_OBJETO_ENCONTRADO`), aguarda o ACK (`0x06`) do STM32 e conclui com o envio do ACK mútuo de volta. Timeout de 500 ms com até 3 tentativas. |
+| `bridge::enviar_sem_objeto()` | *Nenhum* | `bool` | Envia `0xA0` (`CMD_SEM_OBJETO`), aguarda o ACK (`0x06`) do STM32 e conclui com o envio do ACK mútuo de volta. Destrava o pino `PD7`. |
+| `bridge::esta_varredura_ativa()` | *Nenhum* | `bool` | **Thread-safe:** Retorna `true` se a varredura estiver autorizada (`ResumeScan`/`RequestScan` ativo) e `false` se estiver pausada pelo micro (`StopScan`). |
+| `bridge::desconectar()` | *Nenhum* | `void` | Encerra a conexão serial, interrompe a thread do receptor e fecha os descritores de arquivo (RAII). |
+| `bridge::esta_conectado()` | *Nenhum* | `bool` | Verifica se o descritor serial e o observador estão ativos. |
+| `bridge::obter_porta_conectada()` | *Nenhum* | `std::string` | Retorna o caminho absoluto do dispositivo conectado (ex: `"/dev/ttyACM0"`). |
+
+#### Aliases de Conveniência
+- `bridge::isScanActive()` $\rightarrow$ equivalente a `bridge::esta_varredura_ativa()`
+- `bridge::is_scan_active()` $\rightarrow$ equivalente a `bridge::esta_varredura_ativa()`
+- `bridge::enviarObjetoEncontrado()` $\rightarrow$ equivalente a `bridge::enviar_objeto_encontrado()`
+- `bridge::enviarSemObjeto()` $\rightarrow$ equivalente a `bridge::enviar_sem_objeto()`
+
+---
+
+### Como Adicionar a Biblioteca a Outro Projeto
+
+A pasta `host/` foi estruturada para ser consumida como submódulo ou pasta de terceiros (`third_party/serial_lib`).
+
+#### Estrutura Mínima Necessária
 ```text
 seu_projeto/
 ├── CMakeLists.txt
 ├── src/
-│   └── main.cpp                  # Sua aplicação
+│   └── main.cpp
 └── third_party/
-    └── serial_lib/               # Diretório host desta biblioteca
+    └── serial_lib/               # Conteúdo da pasta host/
         ├── CMakeLists.txt
         ├── include/
-        │   ├── Stm32Bridge.hpp   # <- Interface unificada
+        │   ├── Stm32Bridge.hpp   # <- Interface principal
         │   ├── SerialClient.hpp
         │   ├── SerialPort.hpp
-        │   ├── SerialTypes.hpp
-        │   ├── PortEnumerator.hpp
         │   ├── AsyncSerialReceiver.hpp
         │   ├── ISerialObserver.hpp
-        │   └── MessageBufferObserver.hpp
+        │   ├── PortEnumerator.hpp
+        │   └── SerialTypes.hpp
         └── src/
             ├── Stm32Bridge.cpp
             ├── SerialClient.cpp
             ├── SerialPort.cpp
-            ├── PortEnumerator.cpp
             ├── AsyncSerialReceiver.cpp
-            └── MessageBufferObserver.cpp
+            ├── MessageBufferObserver.cpp
+            └── PortEnumerator.cpp
 ```
 
----
-
-### Opção 1: CMake via `add_subdirectory` (Recomendado)
-
-No `CMakeLists.txt` do seu projeto:
-
+#### Opção A: CMake via `add_subdirectory` (Recomendado)
+No seu `CMakeLists.txt`:
 ```cmake
 cmake_minimum_required(VERSION 3.10)
-project(MinhaAplicacao CXX)
+project(CameraPipeline CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# 1. Adiciona a pasta da biblioteca
+# 1. Adiciona a biblioteca serial
 add_subdirectory(third_party/serial_lib)
 
-# 2. Cria seu executável
-add_executable(minha_aplicacao src/main.cpp)
+# 2. Seu executável
+add_executable(meu_detector src/main.cpp)
 
-# 3. Linka com a serial_lib (inclui automaticamente os headers)
-target_link_libraries(minha_aplicacao PRIVATE serial_lib)
+# 3. Linka com a biblioteca (os includes são importados automaticamente)
+target_link_libraries(meu_detector PRIVATE serial_lib)
 ```
 
----
-
-### Opção 2: Integração Direta dos Fontes
-
-Se preferir não usar `add_subdirectory`, adicione os fontes diretamente ao seu alvo:
-
+#### Opção B: Inclusão Direta dos Fontes
+Se não quiser usar `add_subdirectory`:
 ```cmake
-cmake_minimum_required(VERSION 3.10)
-project(MinhaAplicacao CXX)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-find_package(Threads REQUIRED)
-
-add_executable(minha_aplicacao
+add_executable(meu_detector
     src/main.cpp
     third_party/serial_lib/src/Stm32Bridge.cpp
     third_party/serial_lib/src/SerialClient.cpp
     third_party/serial_lib/src/SerialPort.cpp
-    third_party/serial_lib/src/PortEnumerator.cpp
     third_party/serial_lib/src/AsyncSerialReceiver.cpp
     third_party/serial_lib/src/MessageBufferObserver.cpp
+    third_party/serial_lib/src/PortEnumerator.cpp
 )
 
-target_include_directories(minha_aplicacao PRIVATE third_party/serial_lib/include)
-target_link_libraries(minha_aplicacao PRIVATE Threads::Threads)
+target_include_directories(meu_detector PRIVATE third_party/serial_lib/include)
+find_package(Threads REQUIRED)
+target_link_libraries(meu_detector PRIVATE Threads::Threads)
 ```
 
 ---
 
-### Opção 3: Linkagem Estática (`libserial_lib.a`)
-
-Se compilar a biblioteca previamente:
-```bash
-cd host
-mkdir build && cd build
-cmake .. && make serial_lib
-# Gera libserial_lib.a
-```
-
-Basta linkar no compilador:
-```bash
-g++ -std=c++17 main.cpp -Ipath/to/include -Lpath/to/build -lserial_lib -pthread -o minha_aplicacao
-```
-
----
-
-## 💻 Como Importar e Utilizar o `Stm32Bridge`
-
-Basta incluir o cabeçalho `Stm32Bridge.hpp` e utilizar o namespace `bridge`.
-
-### As Três Funções da Abstração
+### Exemplo de Uso no Pipeline de Visão
 
 ```cpp
 #include "Stm32Bridge.hpp"
-
-// 1. Conecta automaticamente buscando o STM32 (VID 0483 / PID 374b)
-//    Opcionalmente aceita uma porta específica: bridge::conectar("/dev/ttyACM0")
-bool bridge::conectar(const std::string& customPort = "");
-
-// 2. Envia 0xA1, abaixa COM_Output/LD1 para 0 e executa o handshake bidirecional
-bool bridge::enviar_objeto_encontrado();
-
-// 3. Envia 0xA0, levanta COM_Output/LD1 para 1 e executa o handshake bidirecional
-bool bridge::enviar_sem_objeto();
-
-// Utilitários auxiliares:
-void bridge::desconectar();
-bool bridge::esta_conectado();
-std::string bridge::obter_porta_conectada();
-```
-
----
-
-### Exemplo Completo de Uso
-
-Abaixo está um exemplo típico de integração em uma aplicação (ex: detecção por câmera ou sensor):
-
-```cpp
-#include "Stm32Bridge.hpp"
-
 #include <iostream>
 #include <thread>
 #include <chrono>
 
-using namespace std::chrono_literals;
-
 int main() {
-    std::cout << "Iniciando comunicação com STM32...\n";
-
-    // 1. Conexão automática (sem parâmetros)
+    // 1. Conecta automaticamente buscando o ST-Link do STM32
     if (!bridge::conectar()) {
-        std::cerr << "Erro: Microcontrolador STM32 não encontrado no barramento USB!\n";
+        std::cerr << "Falha ao conectar com o STM32!" << std::endl;
         return 1;
     }
 
-    std::cout << "Conectado na porta: " << bridge::obter_porta_conectada() << "\n";
+    std::cout << "Conectado em: " << bridge::obter_porta_conectada() << std::endl;
 
-    // 2. Simula detecção de objeto: COM_Output e LD1 vão para 0
-    std::cout << "Objeto detectado! Enviando comando...\n";
-    if (bridge::enviar_objeto_encontrado()) {
-        std::cout << "-> Sucesso: STM32 confirmou e COM_Output está em 0.\n";
-    } else {
-        std::cerr << "-> Falha / Timeout no handshake do STM32.\n";
+    // Loop do pipeline de visão / IA
+    while (bridge::esta_conectado()) {
+        // 2. Consulta se a varredura está liberada pelo microcontrolador
+        if (!bridge::esta_varredura_ativa()) {
+            // A esteira está parada e o servo está manipulando a peça anterior
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
+
+        // 3. Captura frame da câmera e roda inferência do modelo
+        bool peca_detectada = false; /* ... sua lógica de visão aqui ... */
+
+        if (peca_detectada) {
+            std::cout << "Peça detectada! Notificando STM32..." << std::endl;
+
+            // 4. Envia sinal de objeto encontrado com handshake ACK
+            if (bridge::enviar_objeto_encontrado()) {
+                std::cout << "Pino foundObject acionado no STM32 com sucesso!" << std::endl;
+            }
+
+            // O STM32 e a controladora agora vão parar a esteira e mover o servo.
+            // O próprio BridgeObserver receberá o StopScan (0xB0) em background
+            // e mudará esta_varredura_ativa() para false.
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    std::this_thread::sleep_for(3s);
-
-    // 3. Simula ausência de objeto: COM_Output e LD1 voltam para 1
-    std::cout << "Objeto removido! Enviando comando...\n";
-    if (bridge::enviar_sem_objeto()) {
-        std::cout << "-> Sucesso: STM32 confirmou e COM_Output está em 1.\n";
-    } else {
-        std::cerr << "-> Falha / Timeout no handshake do STM32.\n";
-    }
-
-    // 4. Encerramento seguro
     bridge::desconectar();
-    std::cout << "Conexão encerrada com sucesso.\n";
     return 0;
 }
 ```
 
 ---
 
-## 🛠️ Permissões de Acesso no Linux
+## 4. Camada de Firmware (Documentação Dedicada)
 
-Para acessar as portas seriais (`/dev/ttyACM*` ou `/dev/ttyUSB*`) sem necessidade de `sudo`, certifique-se de que o usuário pertença ao grupo `dialout`:
+Todas as informações técnicas de baixo nível da placa STM32F407VET6 estão documentadas detalhadamente em:
+
+👉 **Consulte [firmware/README.md](firmware/README.md)** para:
+- Funcionamento detalhado dos módulos de firmware (`main.c`, `bsp.c`, `bsp.h`, `UartHandler.c`).
+- Tabela completa de mapeamento de pinos, modos GPIO, periféricos (TIM3, TIM4, USART1) e tags do CubeMX.
+- Relação e especificação de todas as funções pendentes de implementação na BSP (`BSP_InitMotor`, `BSP_SetMotorSpeed`, `BSP_SetMotorDir`, `BSP_StartMotor`, `BSP_StopMotor`, `BSP_InitServo`, `BSP_StartServo`, `BSP_StopServo`).
+
+---
+
+## 5. Como Testar e Executar
+
+Consulte o exemplo interativo de terminal CLI em `host/example/demo_bridge.cpp`:
 
 ```bash
-sudo usermod -aG dialout $USER
+cd host
+mkdir -p build && cd build
+cmake ..
+cmake --build .
+
+# Executa o terminal interativo da Bridge
+./bridge_example
 ```
-*(Faça logoff e login novamente para ativar a permissão).*
+
+No terminal, utilize os comandos:
+- `1` / `obj`: envia comando de objeto encontrado (`0xA1`).
+- `0` / `sem`: reseta a flag de objeto encontrado (`0xA0`).
+- `v` / `scan`: consulta o status da varredura (`bridge::esta_varredura_ativa()`).
+- `s` / `status`: exibe status completo da porta serial e mapeamento de opcodes.
+- `t` [N]: executa teste de benchmark de latência RTT em N iterações.
