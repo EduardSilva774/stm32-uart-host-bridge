@@ -16,6 +16,12 @@ extern TIM_HandleTypeDef htim4;
 
 #define DEBOUNCE_TIME_MS    10U
 
+#define SERVO_PULSE_MIN_US	500U 	//0º
+#define SERVO_PULSE_MAX_US	2500U	//180º
+
+#define SERVO_PULSE_IDLE_US     SERVO_PULSE_MIN_US 		//Posição de repouso
+#define SERVO_PULSE_ACTIVE_US   SERVO_PULSE_MAX_US		//Posição de varredura
+
 /* --- Variáveis Estáticas da Comunicação UART com o Host --- */
 static uint8_t rx_cmd_buffer[1];
 static volatile uint8_t object_detected_flag = 0;
@@ -359,7 +365,8 @@ void BSP_StartMotor(void)
  */
 void BSP_InitServo(void)
 {
-    /* TODO: Implementar inicialização do servomotor */
+    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, SERVO_PULSE_IDLE_US);
+    HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
 }
 
 /**
@@ -368,7 +375,7 @@ void BSP_InitServo(void)
  */
 void BSP_StartServo(void)
 {
-    /* TODO: Implementar ativação do servomotor */
+    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, SERVO_PULSE_ACTIVE_US);
 }
 
 /**
@@ -377,7 +384,7 @@ void BSP_StartServo(void)
  */
 void BSP_StopServo(void)
 {
-    /* TODO: Implementar desativação do servomotor */
+    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, SERVO_PULSE_IDLE_US);
 }
 
 /* ==============================================================================
