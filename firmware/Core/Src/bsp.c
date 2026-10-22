@@ -17,7 +17,7 @@ extern TIM_HandleTypeDef htim4;
 #define DEBOUNCE_TIME_MS    10U
 
 #define SERVO_PULSE_MIN_US	500U 	//0º
-#define SERVO_PULSE_MAX_US	2500U	//180º
+#define SERVO_PULSE_MAX_US	1700U	//180º
 
 #define SERVO_PULSE_IDLE_US     SERVO_PULSE_MIN_US 		//Posição de repouso
 #define SERVO_PULSE_ACTIVE_US   SERVO_PULSE_MAX_US		//Posição de varredura
@@ -60,7 +60,7 @@ static void ProcessMotorEnable(void)
 	if (current_enable != last_enable_state)
 	{
 		last_enable_state = current_enable;
-		if (current_enable == GPIO_PIN_RESET)
+		if (current_enable == GPIO_PIN_SET)
 		{
 			motor_is_active = 1;
 			BSP_StartMotor();
@@ -88,7 +88,7 @@ static void ProcessMotorDirection(void)
 	if (current_dir != last_dir_state)
 	{
 		last_dir_state = current_dir;
-		if (current_dir == GPIO_PIN_RESET)
+		if (current_dir == GPIO_PIN_SET)
 		{
 			BSP_SetMotorDir(LEFT);
 		}
@@ -318,8 +318,10 @@ void BSP_InitMotor(void)
  */
 void BSP_SetMotorSpeed(motorSpeed_e speed)
 {
-    static const uint16_t arr_table[]   = {2999, 1999, 1499, 1199};
-    static const uint16_t pulse_table[] = {1500, 1000,  750,  600};
+    static const uint16_t arr_table[]   = {1999, 1499, 1199, 799};
+    static const uint16_t pulse_table[] = {1000, 750,  600,  400};
+//    static const uint16_t arr_table[]   = {2999, 1999, 999, 499};
+//    static const uint16_t pulse_table[] = {1500, 1000,  500,  250};
     if (speed <= SPEED4)
     {
         __HAL_TIM_SET_AUTORELOAD(&htim3, arr_table[speed]);
@@ -334,8 +336,9 @@ void BSP_SetMotorSpeed(motorSpeed_e speed)
  */
 void BSP_SetMotorDir(motorDir_e dir)
 {
-	GPIO_PinState pin_state = (dir == LEFT) ? GPIO_PIN_RESET : GPIO_PIN_SET;
-	HAL_GPIO_WritePin(directionMotorOut_GPIO_Port, directionMotorOut_Pin, pin_state);}
+	GPIO_PinState pin_state = (dir == RIGHT) ? GPIO_PIN_RESET : GPIO_PIN_SET;
+	HAL_GPIO_WritePin(directionMotorOut_GPIO_Port, directionMotorOut_Pin, pin_state);
+}
 
 /**
  * @brief  Interrompe o funcionamento do motor (parada / desacionamento).
@@ -375,7 +378,7 @@ void BSP_InitServo(void)
  */
 void BSP_StartServo(void)
 {
-    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, SERVO_PULSE_ACTIVE_US);
+    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, SERVO_PULSE_IDLE_US);
 }
 
 /**
@@ -384,7 +387,7 @@ void BSP_StartServo(void)
  */
 void BSP_StopServo(void)
 {
-    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, SERVO_PULSE_IDLE_US);
+    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, SERVO_PULSE_ACTIVE_US);
 }
 
 /* ==============================================================================

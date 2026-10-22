@@ -71,8 +71,6 @@ void Error_Handler(void);
 #define enableMotorIn_GPIO_Port GPIOD
 #define speed1_Pin GPIO_PIN_1
 #define speed1_GPIO_Port GPIOD
-#define speed2_Pin GPIO_PIN_2
-#define speed2_GPIO_Port GPIOD
 #define speed3_Pin GPIO_PIN_3
 #define speed3_GPIO_Port GPIOD
 #define speed4_Pin GPIO_PIN_4
@@ -83,6 +81,8 @@ void Error_Handler(void);
 #define servoControl_GPIO_Port GPIOD
 #define foundObject_Pin GPIO_PIN_7
 #define foundObject_GPIO_Port GPIOD
+#define speed2_Pin GPIO_PIN_5
+#define speed2_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

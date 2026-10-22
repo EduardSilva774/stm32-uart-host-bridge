@@ -313,6 +313,7 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, enableMotorOut_Pin|directionMotorOut_Pin, GPIO_PIN_RESET);
@@ -327,10 +328,10 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : enableMotorIn_Pin speed1_Pin speed2_Pin speed3_Pin
-                           speed4_Pin directionIn_Pin servoControl_Pin */
-  GPIO_InitStruct.Pin = enableMotorIn_Pin|speed1_Pin|speed2_Pin|speed3_Pin
-                          |speed4_Pin|directionIn_Pin|servoControl_Pin;
+  /*Configure GPIO pins : enableMotorIn_Pin speed1_Pin speed3_Pin speed4_Pin
+                           directionIn_Pin servoControl_Pin */
+  GPIO_InitStruct.Pin = enableMotorIn_Pin|speed1_Pin|speed3_Pin|speed4_Pin
+                          |directionIn_Pin|servoControl_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
@@ -341,6 +342,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(foundObject_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : speed2_Pin */
+  GPIO_InitStruct.Pin = speed2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  HAL_GPIO_Init(speed2_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
