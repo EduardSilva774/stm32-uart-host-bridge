@@ -16,6 +16,12 @@ extern TIM_HandleTypeDef htim4;
 
 #define DEBOUNCE_TIME_MS    10U
 
+#define SERVO_PULSE_MIN_US	500U 	//0º
+#define SERVO_PULSE_MAX_US	2500U	//180º
+
+#define SERVO_PULSE_IDLE_US     SERVO_PULSE_MIN_US 		//Posição de repouso
+#define SERVO_PULSE_ACTIVE_US   SERVO_PULSE_MAX_US		//Posição de varredura
+
 /* --- Variáveis Estáticas da Comunicação UART com o Host --- */
 static uint8_t rx_cmd_buffer[1];
 static volatile uint8_t object_detected_flag = 0;
@@ -300,7 +306,9 @@ void BSP_InitAPP(void)
  */
 void BSP_InitMotor(void)
 {
-    /* TODO: Implementar inicialização do motor(timer3) */
+    BSP_SetMotorDir(LEFT);
+    BSP_SetMotorSpeed(SPEED1);
+    BSP_StopMotor();
 }
 
 /**
@@ -310,7 +318,13 @@ void BSP_InitMotor(void)
  */
 void BSP_SetMotorSpeed(motorSpeed_e speed)
 {
-    /* TODO: Implementar seleção de velocidade do motor */
+    static const uint16_t arr_table[]   = {2999, 1999, 1499, 1199};
+    static const uint16_t pulse_table[] = {1500, 1000,  750,  600};
+    if (speed <= SPEED4)
+    {
+        __HAL_TIM_SET_AUTORELOAD(&htim3, arr_table[speed]);
+        __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, pulse_table[speed]);
+    }
 }
 
 /**
@@ -320,8 +334,8 @@ void BSP_SetMotorSpeed(motorSpeed_e speed)
  */
 void BSP_SetMotorDir(motorDir_e dir)
 {
-    /* TODO: Implementar seleção de direção do motor */
-}
+	GPIO_PinState pin_state = (dir == LEFT) ? GPIO_PIN_RESET : GPIO_PIN_SET;
+	HAL_GPIO_WritePin(directionMotorOut_GPIO_Port, directionMotorOut_Pin, pin_state);}
 
 /**
  * @brief  Interrompe o funcionamento do motor (parada / desacionamento).
@@ -329,8 +343,8 @@ void BSP_SetMotorDir(motorDir_e dir)
  */
 void BSP_StopMotor(void)
 {
-    /* TODO: Implementar parada do motor */
-}
+    HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_1);
+    HAL_GPIO_WritePin(enableMotorOut_GPIO_Port, enableMotorOut_Pin, GPIO_PIN_SET);}
 
 /**
  * @brief  Inicia ou retoma o acionamento do motor conforme as configurações atuais.
@@ -338,8 +352,8 @@ void BSP_StopMotor(void)
  */
 void BSP_StartMotor(void)
 {
-    /* TODO: Implementar acionamento/partida do motor */
-}
+    HAL_GPIO_WritePin(enableMotorOut_GPIO_Port, enableMotorOut_Pin, GPIO_PIN_RESET);
+    HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);}
 
 /* ==============================================================================
  * CONTROLE DE SERVOMOTOR
@@ -351,7 +365,8 @@ void BSP_StartMotor(void)
  */
 void BSP_InitServo(void)
 {
-    /* TODO: Implementar inicialização do servomotor */
+    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, SERVO_PULSE_IDLE_US);
+    HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
 }
 
 /**
@@ -360,7 +375,7 @@ void BSP_InitServo(void)
  */
 void BSP_StartServo(void)
 {
-    /* TODO: Implementar ativação do servomotor */
+    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, SERVO_PULSE_ACTIVE_US);
 }
 
 /**
@@ -369,7 +384,7 @@ void BSP_StartServo(void)
  */
 void BSP_StopServo(void)
 {
-    /* TODO: Implementar desativação do servomotor */
+    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, SERVO_PULSE_IDLE_US);
 }
 
 /* ==============================================================================
